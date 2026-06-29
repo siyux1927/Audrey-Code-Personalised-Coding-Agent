@@ -10,12 +10,6 @@ export type LoopEvent =
   | { type: 'tool_result'; name: string; result: string; isError: boolean }
   | { type: 'done' }
 
-const TOOL_SPECS = ALL_TOOLS.map(t => ({
-  name: t.name,
-  description: t.description,
-  parameters: PARAM_SCHEMAS[t.name as keyof typeof PARAM_SCHEMAS] ?? { type: 'object', properties: {} },
-}))
-
 const PARAM_SCHEMAS = {
   read_file: {
     type: 'object',
@@ -44,6 +38,12 @@ const PARAM_SCHEMAS = {
     required: ['pattern'],
   },
 } as const
+
+const TOOL_SPECS = ALL_TOOLS.map(t => ({
+  name: t.name,
+  description: t.description,
+  parameters: PARAM_SCHEMAS[t.name as keyof typeof PARAM_SCHEMAS] ?? { type: 'object', properties: {} },
+}))
 
 export async function* agentLoop(
   messages: Message[],
