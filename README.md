@@ -1,6 +1,6 @@
 # Audrey Code
 
-![header](assets/readme-header.png)
+<p align="center"><img src="assets/readme-header.png" width="70%"></p>
 
 实惠轻量 AI CLI 编程助手
 
@@ -44,7 +44,7 @@
 - **DeepSeek-R1** — 深度推理模型，用于复杂逻辑和数学问题
 - **OpenAI 兼容接口 + SSE** — 所有模型统一通过流式接口调用，逐 token 输出
 - **Vitest** — 单元测试，覆盖路由、工具、session、provider 各层
-![header](assets/readme-models.png)
+<p align="center"><img src="assets/readme-models.png" width="70%"></p>
 
 
 ---
