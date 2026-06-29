@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { DEFAULT_CONFIG } from '../src/config.js'
 import { DeepSeekProvider } from '../src/providers/deepseek.js'
 import { GLMProvider } from '../src/providers/glm.js'
@@ -31,6 +31,8 @@ describe('countTokens', () => {
 })
 
 describe('BaseProvider retry', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
   it('retries on 429 and succeeds on third attempt', async () => {
     const p = new DeepSeekProvider(DEFAULT_CONFIG, 'standard')
     let calls = 0
@@ -56,6 +58,5 @@ describe('BaseProvider retry', () => {
     }
     expect(chunks.join('')).toBe('hi')
     expect(calls).toBe(3)
-    vi.unstubAllGlobals()
   })
 })
