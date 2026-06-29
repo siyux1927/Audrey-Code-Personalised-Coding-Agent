@@ -6,8 +6,8 @@ import { ALL_TOOLS } from '../tools/index.js'
 export type LoopEvent =
   | { type: 'token'; content: string }
   | { type: 'turn_done'; content: string; toolCalls: ToolCallData[] }
-  | { type: 'tool_start'; name: string; args: Record<string, unknown> }
-  | { type: 'tool_result'; name: string; result: string; isError: boolean }
+  | { type: 'tool_start'; id: string; name: string; args: Record<string, unknown> }
+  | { type: 'tool_result'; id: string; name: string; result: string; isError: boolean }
   | { type: 'done' }
 
 const PARAM_SCHEMAS = {
@@ -79,17 +79,17 @@ export async function* agentLoop(
 
     // Execute each tool and add result to context
     for (const call of toolCalls) {
-      yield { type: 'tool_start', name: call.name, args: call.args }
+      yield { type: 'tool_start', id: call.id, name: call.name, args: call.args }
       const tool = ALL_TOOLS.find(t => t.name === call.name)
       try {
         const result = tool
           ? await tool.execute(call.args as any, config)
           : `Unknown tool: ${call.name}`
-        yield { type: 'tool_result', name: call.name, result, isError: false }
+        yield { type: 'tool_result', id: call.id, name: call.name, result, isError: false }
         current.push({ role: 'tool', content: result, toolCallId: call.id, toolName: call.name })
       } catch (err: any) {
         const msg = (err as Error).message
-        yield { type: 'tool_result', name: call.name, result: msg, isError: true }
+        yield { type: 'tool_result', id: call.id, name: call.name, result: msg, isError: true }
         current.push({ role: 'tool', content: msg, toolCallId: call.id, toolName: call.name })
       }
     }

@@ -26,6 +26,24 @@ type AppPhase = 'splash' | 'repl'
 const CMD_OUTPUT = '__output__'
 const BTW_NOTE   = '__btw__'
 
+// Remove messages that would cause a 400 from the API:
+//  - CMD_OUTPUT / BTW_NOTE display-only messages
+//  - tool messages whose tool_call_id doesn't match any preceding assistant tool_calls
+function sanitizeForApi(messages: import('../types.js').Message[]): import('../types.js').Message[] {
+  // Collect all valid tool_call ids from assistant messages
+  const validIds = new Set<string>()
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.toolCalls) {
+      for (const tc of m.toolCalls) validIds.add(tc.id)
+    }
+  }
+  return messages.filter(m => {
+    if (m.toolName === CMD_OUTPUT || m.toolName === BTW_NOTE) return false
+    if (m.role === 'tool') return !!(m.toolCallId && validIds.has(m.toolCallId))
+    return true
+  })
+}
+
 export function App({ permissionMode }: Props) {
   useApp()
   const [phase, setPhase] = useState<AppPhase>('splash')
@@ -104,9 +122,9 @@ export function App({ permissionMode }: Props) {
     setGenerating(true)
     setCurrentPhrase(getPhrase('thinking'))
 
-    // AI sees augmented input; strip cmd output noise before sending
+    // AI sees augmented input; sanitize before sending
     const aiMessages = [
-      ...current.messages.slice(0, -1).filter(m => m.toolName !== CMD_OUTPUT),
+      ...sanitizeForApi(current.messages.slice(0, -1)),
       { role: 'user' as const, content: effectiveInput },
     ]
 
@@ -136,16 +154,19 @@ export function App({ permissionMode }: Props) {
           }
         } else if (event.type === 'tool_start') {
           setCurrentPhrase(getPhrase('running'))
+          // Display-only: use CMD_OUTPUT so it's stripped before sending to AI
           current = addMessage(current, {
             role: 'tool',
             content: `⚙ ${event.name}(${JSON.stringify(event.args).slice(0, 100)})`,
-            toolName: event.name,
+            toolName: CMD_OUTPUT,
           })
           setSession(current)
         } else if (event.type === 'tool_result') {
+          // Proper tool result: toolCallId must match the assistant's tool_calls entry
           current = addMessage(current, {
             role: 'tool',
             content: event.result.slice(0, 2000),
+            toolCallId: event.id,
             toolName: event.name,
           })
           setSession(current)
