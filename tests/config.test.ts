@@ -1,17 +1,21 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, rmSync, existsSync } from 'fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdirSync, rmSync, mkdtempSync } from 'fs'
 import { join } from 'path'
 import os from 'os'
 
-const TEST_DIR = join(os.tmpdir(), 'audrey-test-' + Date.now())
-
-// Override home for tests
-process.env.HOME = TEST_DIR
-
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from '../src/config.js'
 
-beforeEach(() => mkdirSync(join(TEST_DIR, '.audrey'), { recursive: true }))
-afterEach(() => rmSync(TEST_DIR, { recursive: true, force: true }))
+let TEST_DIR: string
+
+beforeEach(() => {
+  TEST_DIR = mkdtempSync(join(os.tmpdir(), 'audrey-test-'))
+  mkdirSync(join(TEST_DIR, '.audrey'), { recursive: true })
+  vi.stubEnv('HOME', TEST_DIR)
+})
+afterEach(() => {
+  vi.unstubAllEnvs()
+  rmSync(TEST_DIR, { recursive: true, force: true })
+})
 
 describe('loadConfig', () => {
   it('returns defaults when no config file exists', async () => {
@@ -25,6 +29,6 @@ describe('loadConfig', () => {
     await saveConfig({ ...DEFAULT_CONFIG, tagline: '测试标语' })
     const cfg = await loadConfig()
     expect(cfg.tagline).toBe('测试标语')
-    expect(cfg.dailyBudgetCNY).toBe(10) // default preserved
+    expect(cfg.dailyBudgetCNY).toBe(10)
   })
 })
