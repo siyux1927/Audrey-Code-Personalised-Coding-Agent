@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Box, Text, useApp } from 'ink'
+import { Box, Text, useApp, useInput } from 'ink'
 import Spinner from 'ink-spinner'
 import { theme } from './theme.js'
 import { FlowerArt } from './FlowerArt.js'
 import { MessageList } from './MessageList.js'
+import { Markdown } from './Markdown.js'
 import { Prompt } from './Prompt.js'
 import { AgentStatus, type AgentTask } from './AgentStatus.js'
 import { getPhrase } from './phrases.js'
@@ -47,6 +48,7 @@ function sanitizeForApi(messages: import('../types.js').Message[]): import('../t
 export function App({ permissionMode }: Props) {
   useApp()
   const [phase, setPhase] = useState<AppPhase>('splash')
+  const [splashReady, setSplashReady] = useState(false)  // init done + min time elapsed
   const [config, setConfigState] = useState<AudreyConfig | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [generating, setGenerating] = useState(false)
@@ -55,6 +57,7 @@ export function App({ permissionMode }: Props) {
   const [streamContent, setStreamContent] = useState('')
 
   useEffect(() => {
+    const minDelay = new Promise<void>(r => setTimeout(r, 1200))
     async function init() {
       await ensureAudreyDir()
       const cfg = await loadConfig()
@@ -65,10 +68,16 @@ export function App({ permissionMode }: Props) {
         : sess
       setConfigState(cfg)
       setSession({ ...sessWithMemory, permissionMode })
-      setTimeout(() => setPhase('repl'), 1500)
+      await minDelay    // ensure splash shows at least 1.2s
+      setSplashReady(true)
     }
     void init()
   }, [])
+
+  // Dismiss splash on any keypress (after init finishes)
+  useInput((_input, key) => {
+    if (phase === 'splash' && splashReady && !key.ctrl) setPhase('repl')
+  }, { isActive: phase === 'splash' })
 
   const handleSubmit = useCallback(async (input: string) => {
     if (!config || !session) return
@@ -201,13 +210,20 @@ export function App({ permissionMode }: Props) {
     setStreamContent('')
   }, [])
 
-  if (phase === 'splash' || !config || !session) {
+  if (phase === 'splash') {
     return (
       <Box flexDirection="column" padding={1}>
         <FlowerArt version="v0.1.0" tagline={config?.tagline ?? '实习摸鱼，努力学习'} />
+        <Box marginTop={1}>
+          {splashReady
+            ? <Text color={theme.dimPurple}>  按任意键开始...</Text>
+            : <Text color={theme.dimPurple}>  正在初始化...</Text>}
+        </Box>
       </Box>
     )
   }
+
+  if (!config || !session) return null
 
   const contextPct = Math.round(getContextUsage(session, config.sessionMaxTokens) * 100)
 
@@ -224,8 +240,10 @@ export function App({ permissionMode }: Props) {
       {/* Streaming in-progress assistant response */}
       {streamContent !== '' && (
         <Box flexDirection="column" marginBottom={1}>
-          <Text color={theme.purple}>◆ </Text>
-          <Text>{streamContent}</Text>
+          <Text color={theme.purple}>◆</Text>
+          <Box marginLeft={2} flexDirection="column">
+            <Markdown>{streamContent}</Markdown>
+          </Box>
         </Box>
       )}
 
