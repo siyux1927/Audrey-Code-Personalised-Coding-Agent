@@ -51,7 +51,7 @@ export async function loadMemory(cwd: string, maxTokens: number): Promise<string
 
   let combined = layers.join('\n\n---\n\n')
 
-  // Truncate from the front to fit within maxTokens
+  // Trim the tail until within maxTokens
   while (estimateTokens(combined) > maxTokens && combined.length > 0) {
     combined = combined.slice(0, Math.floor(combined.length * 0.9))
   }
