@@ -10,6 +10,13 @@ describe('checkPathSafety', () => {
   it('rejects path traversal', () => {
     expect(checkPathSafety('../../etc/passwd', DEFAULT_CONFIG)).toBe(false)
   })
+
+  it('rejects sibling directories sharing an allowed-dir name prefix', () => {
+    const cfg = { ...DEFAULT_CONFIG, allowedWriteDirs: [process.cwd()] }
+    // A dir whose name starts with cwd's name but is a sibling, not a child
+    const sibling = process.cwd() + '-evil/secret.ts'
+    expect(checkPathSafety(sibling, cfg)).toBe(false)
+  })
 })
 
 describe('getCommandBase', () => {

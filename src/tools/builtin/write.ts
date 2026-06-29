@@ -1,4 +1,4 @@
-import { readFile, writeFile, copyFile, mkdir, readdir, unlink } from 'fs/promises'
+import { writeFile, copyFile, mkdir, readdir, unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join, dirname } from 'path'
 import os from 'os'

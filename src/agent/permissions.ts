@@ -7,15 +7,11 @@ export type PermissionDecision = 'allow' | 'deny' | 'ask'
 const ALWAYS_CONFIRM = ['rm', 'sudo', 'curl', 'wget', 'chmod', 'chown', 'dd', 'mkfs']
 
 export function checkPathSafety(filePath: string, config: AudreyConfig): boolean {
-  const resolved = resolve(filePath)
-  const normalized = normalize(resolved)
-
-  if (normalized.includes('..')) return false
-
+  const normalized = normalize(resolve(filePath))
   const allowedDirs = config.allowedWriteDirs.map(d =>
-    d === '$CWD' ? process.cwd() : d,
+    resolve(d === '$CWD' ? process.cwd() : d),
   )
-  return allowedDirs.some(dir => normalized.startsWith(resolve(dir)))
+  return allowedDirs.some(dir => normalized === dir || normalized.startsWith(dir + '/'))
 }
 
 export function getCommandBase(command: string): string {
