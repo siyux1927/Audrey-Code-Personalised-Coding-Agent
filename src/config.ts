@@ -62,7 +62,7 @@ export const DEFAULT_CONFIG: AudreyConfig = {
   },
 }
 
-const audreyDir = () => join(os.homedir(), '.audrey')
+const audreyDir = () => join(process.env.HOME ?? os.homedir(), '.audrey')
 const configPath = () => join(audreyDir(), 'config.json')
 
 export async function ensureAudreyDir(): Promise<void> {
