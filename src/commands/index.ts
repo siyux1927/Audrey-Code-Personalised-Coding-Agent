@@ -7,7 +7,7 @@ export const KNOWN_COMMANDS = new Set([
   'model', 'cost', 'memory', 'save-memory', 'undo', 'rewind',
   'compact', 'clear', 'reset', 'diff', 'status', 'history',
   'init', 'config', 'tagline', 'parallel', 'mcp', 'resume',
-  'doctor', 'bug', 'help',
+  'doctor', 'bug', 'help', 'btw',
 ])
 
 export function parseCommand(input: string): ParsedCommand | null {

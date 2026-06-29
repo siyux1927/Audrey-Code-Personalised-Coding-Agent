@@ -14,11 +14,17 @@ import { route } from '../agent/router.js'
 import { resolveProvider } from '../providers/registry.js'
 import { parseCommand } from '../commands/index.js'
 import { handleCommand } from '../commands/handlers.js'
+import { agentLoop } from '../agent/loop.js'
+import { getTodaySpend, recordUsage } from '../health/budget.js'
 import type { PermissionMode } from '../types.js'
 
 interface Props { permissionMode: PermissionMode }
 
 type AppPhase = 'splash' | 'repl'
+
+// Sentinel toolName values (never sent to AI)
+const CMD_OUTPUT = '__output__'
+const BTW_NOTE   = '__btw__'
 
 export function App({ permissionMode }: Props) {
   useApp()
@@ -28,7 +34,7 @@ export function App({ permissionMode }: Props) {
   const [generating, setGenerating] = useState(false)
   const [currentPhrase, setCurrentPhrase] = useState('')
   const [agentTasks] = useState<AgentTask[]>([])
-  const [output, setOutput] = useState<string[]>([])
+  const [streamContent, setStreamContent] = useState('')
 
   useEffect(() => {
     async function init() {
@@ -49,6 +55,7 @@ export function App({ permissionMode }: Props) {
   const handleSubmit = useCallback(async (input: string) => {
     if (!config || !session) return
 
+    // ── Command handling ──────────────────────────────────────────────────────
     const cmd = parseCommand(input)
     if (cmd) {
       await handleCommand(cmd, {
@@ -56,36 +63,122 @@ export function App({ permissionMode }: Props) {
         config,
         setSession,
         setConfig: (c) => { setConfigState(c); void saveConfig(c) },
-        clearScreen: () => setOutput([]),
-        print: (msg) => setOutput(o => [...o, msg]),
+        clearScreen: () => setSession(s => s
+          ? { ...s, messages: s.messages.filter(m => m.toolName !== CMD_OUTPUT) }
+          : s),
+        print: (msg) => setSession(s => s
+          ? addMessage(s, { role: 'tool', content: msg, toolName: CMD_OUTPUT })
+          : s),
       })
       return
     }
 
-    const newSession = addMessage(session, { role: 'user', content: input })
-    setSession(newSession)
+    // ── Budget guard ──────────────────────────────────────────────────────────
+    const todaySpend = await getTodaySpend()
+    if (todaySpend >= config.dailyBudgetCNY) {
+      setSession(s => s
+        ? addMessage(s, {
+            role: 'tool',
+            content: `[预算超限] 今日已消耗 ¥${todaySpend.toFixed(4)}，上限 ¥${config.dailyBudgetCNY}。用 /cost 查看明细。`,
+            toolName: CMD_OUTPUT,
+          })
+        : s)
+      return
+    }
+
+    // ── Extract /btw notes and inject into context ────────────────────────────
+    const btwNotes = session.messages
+      .filter(m => m.toolName === BTW_NOTE)
+      .map(m => m.content)
+    const effectiveInput = btwNotes.length > 0
+      ? `[注意事项]\n${btwNotes.join('\n')}\n\n${input}`
+      : input
+
+    // Build session: remove btw notes, remove cmd output, add user message
+    let current: Session = {
+      ...session,
+      messages: session.messages.filter(m => m.toolName !== BTW_NOTE),
+    }
+    current = addMessage(current, { role: 'user', content: input }) // display: original
+    setSession(current)
     setGenerating(true)
     setCurrentPhrase(getPhrase('thinking'))
 
-    const tier = route(input, newSession.messages, newSession.modelOverride)
+    // AI sees augmented input; strip cmd output noise before sending
+    const aiMessages = [
+      ...current.messages.slice(0, -1).filter(m => m.toolName !== CMD_OUTPUT),
+      { role: 'user' as const, content: effectiveInput },
+    ]
+
+    const tier = route(input, aiMessages, current.modelOverride)
     const provider = resolveProvider(tier, config)
+    const t0 = Date.now()
 
     try {
-      let response = ''
-      for await (const chunk of provider.chat(newSession.messages)) {
-        response += chunk
+      let streamBuf = ''
+
+      for await (const event of agentLoop(aiMessages, provider, config)) {
+        if (event.type === 'token') {
+          streamBuf += event.content
+          setStreamContent(streamBuf)
+          setCurrentPhrase(getPhrase('thinking'))
+        } else if (event.type === 'turn_done') {
+          // Flush assistant turn to session
+          if (streamBuf) {
+            current = addMessage(current, {
+              role: 'assistant',
+              content: streamBuf,
+              toolCalls: event.toolCalls.length > 0 ? event.toolCalls : undefined,
+            })
+            setSession(current)
+            streamBuf = ''
+            setStreamContent('')
+          }
+        } else if (event.type === 'tool_start') {
+          setCurrentPhrase(getPhrase('running'))
+          current = addMessage(current, {
+            role: 'tool',
+            content: `⚙ ${event.name}(${JSON.stringify(event.args).slice(0, 100)})`,
+            toolName: event.name,
+          })
+          setSession(current)
+        } else if (event.type === 'tool_result') {
+          current = addMessage(current, {
+            role: 'tool',
+            content: event.result.slice(0, 2000),
+            toolName: event.name,
+          })
+          setSession(current)
+        } else if (event.type === 'done') {
+          await saveSession(current)
+          // Record approximate usage (rough estimate: 1 CNY per 500k chars)
+          const chars = aiMessages.reduce((s, m) => s + m.content.length, 0)
+          await recordUsage({
+            date: new Date().toISOString().slice(0, 10),
+            costCNY: chars / 500000,
+            tokens: Math.ceil(chars / 3.5),
+            model: provider.modelId,
+          })
+        }
       }
-      const finalSession = addMessage(newSession, { role: 'assistant', content: response })
-      setSession(finalSession)
-      await saveSession(finalSession)
     } catch (err: any) {
-      setOutput(o => [...o, `[错误] ${err.message}`])
+      setStreamContent('')
+      current = addMessage(current, {
+        role: 'tool',
+        content: `[错误] ${(err as Error).message}`,
+        toolName: CMD_OUTPUT,
+      })
+      setSession(current)
     } finally {
+      setStreamContent('')
       setGenerating(false)
     }
   }, [config, session])
 
-  const handleAbort = useCallback(() => setGenerating(false), [])
+  const handleAbort = useCallback(() => {
+    setGenerating(false)
+    setStreamContent('')
+  }, [])
 
   if (phase === 'splash' || !config || !session) {
     return (
@@ -107,11 +200,17 @@ export function App({ permissionMode }: Props) {
 
       <MessageList messages={session.messages.filter(m => m.role !== 'system')} />
 
-      {output.map((line, i) => <Text key={i} color={theme.dimPurple}>{line}</Text>)}
+      {/* Streaming in-progress assistant response */}
+      {streamContent !== '' && (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text color={theme.purple}>◆ </Text>
+          <Text>{streamContent}</Text>
+        </Box>
+      )}
 
       <AgentStatus tasks={agentTasks} />
 
-      {generating && (
+      {generating && streamContent === '' && (
         <Box marginY={1}>
           <Text color={theme.purple}><Spinner type="dots" /></Text>
           <Text color={theme.pink}>  {currentPhrase}</Text>

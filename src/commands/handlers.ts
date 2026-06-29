@@ -4,6 +4,11 @@ import { join } from 'path'
 import os from 'os'
 import { execSync } from 'child_process'
 import type { Session } from '../agent/session.js'
+import { addMessage, loadLastSession } from '../agent/session.js'
+import { compact } from '../agent/compactor.js'
+import { appendMemory } from '../memory/writer.js'
+import { runHealthCheck } from '../health/check.js'
+import { resolveProvider } from '../providers/registry.js'
 import type { AudreyConfig } from '../config.js'
 import type { ParsedCommand } from './index.js'
 import type { ModelTier } from '../types.js'
@@ -22,21 +27,26 @@ export async function handleCommand(
   ctx: CommandContext,
 ): Promise<void> {
   switch (cmd.name) {
-    case 'model':   return handleModel(cmd.args, ctx)
-    case 'cost':    return handleCost(ctx)
-    case 'clear':   ctx.clearScreen(); return
-    case 'reset':   ctx.clearScreen(); ctx.setSession({ ...ctx.session, messages: [] }); return
-    case 'tagline': return handleTagline(cmd.args, ctx)
-    case 'help':    return handleHelp(ctx)
-    case 'status':  return handleStatus(ctx)
-    case 'undo':    return handleUndo(ctx)
-    case 'rewind':  return handleRewind(cmd.args, ctx)
-    case 'init':    return handleInit(ctx)
-    case 'memory':  return handleMemory(cmd.args, ctx)
-    case 'history': return handleHistory(cmd.args, ctx)
-    case 'diff':    return handleDiff(ctx)
-    case 'config':  return handleConfig(ctx)
-    default:        ctx.print(`Unknown command: /${cmd.name}`)
+    case 'model':       return handleModel(cmd.args, ctx)
+    case 'cost':        return handleCost(ctx)
+    case 'clear':       ctx.clearScreen(); return
+    case 'reset':       ctx.clearScreen(); ctx.setSession({ ...ctx.session, messages: [] }); return
+    case 'tagline':     return handleTagline(cmd.args, ctx)
+    case 'help':        return handleHelp(ctx)
+    case 'status':      return handleStatus(ctx)
+    case 'undo':        return handleUndo(ctx)
+    case 'rewind':      return handleRewind(cmd.args, ctx)
+    case 'init':        return handleInit(ctx)
+    case 'memory':      return handleMemory(cmd.args, ctx)
+    case 'history':     return handleHistory(cmd.args, ctx)
+    case 'diff':        return handleDiff(ctx)
+    case 'config':      return handleConfig(ctx)
+    case 'btw':         return handleBtw(cmd.args, ctx)
+    case 'resume':      return handleResume(ctx)
+    case 'save-memory': return handleSaveMemory(ctx)
+    case 'compact':     return handleCompact(ctx)
+    case 'doctor':      return handleDoctor(ctx)
+    default:            ctx.print(`Unknown command: /${cmd.name}`)
   }
 }
 
@@ -165,7 +175,7 @@ function handleHelp(ctx: CommandContext): void {
 /model [lite|standard|reason|auto]  切换模型档位
 /cost                               token 消耗明细
 /memory [global|project]            打开 AUDREY.md 编辑
-/save-memory                        整理会话写入记忆
+/save-memory                        整理会话摘要写入记忆
 /undo                               撤销上次文件修改
 /rewind [n]                         回退 n 条对话
 /compact                            手动压缩上下文
@@ -177,9 +187,70 @@ function handleHelp(ctx: CommandContext): void {
 /init                               创建 AUDREY.md 模板
 /config                             打开配置文件
 /tagline <文字>                      修改启动标语
-/mcp [list|start|stop|add]          MCP server 管理
+/btw <备注>                          添加一次性上下文备注（下次发送生效）
 /resume                             恢复上次崩溃会话
 /doctor                             健康检查
 /help                               显示本帮助
 `.trim())
+}
+
+function handleBtw(args: string[], ctx: CommandContext): void {
+  if (args.length === 0) {
+    const notes = ctx.session.messages.filter(m => m.toolName === '__btw__')
+    if (notes.length === 0) {
+      ctx.print('没有待发送的备注。用法: /btw <备注内容>')
+    } else {
+      ctx.print('待发备注（下次对话自动携带）:')
+      notes.forEach(n => ctx.print(`  📌 ${n.content}`))
+    }
+    return
+  }
+  const note = args.join(' ')
+  ctx.setSession(addMessage(ctx.session, { role: 'tool', content: note, toolName: '__btw__' }))
+  ctx.print(`📌 备注已记录: ${note}`)
+}
+
+async function handleResume(ctx: CommandContext): Promise<void> {
+  const last = await loadLastSession()
+  if (!last) { ctx.print('没有找到上次的会话记录'); return }
+  const msgCount = last.messages.filter(m => m.role !== 'system').length
+  ctx.setSession({ ...last, permissionMode: ctx.session.permissionMode })
+  ctx.print(`✓ 已恢复上次会话 (${msgCount} 条消息，创建于 ${new Date(last.createdAt).toLocaleString()})`)
+}
+
+async function handleSaveMemory(ctx: CommandContext): Promise<void> {
+  const msgs = ctx.session.messages.filter(m =>
+    m.role !== 'system' && m.toolName !== '__output__' && m.toolName !== '__btw__'
+  )
+  if (msgs.length === 0) { ctx.print('当前会话没有可保存的内容'); return }
+
+  const summary = msgs
+    .slice(-20)
+    .map(m => `[${m.role}] ${m.content.slice(0, 200)}`)
+    .join('\n')
+
+  const memPath = join(process.cwd(), 'AUDREY.md')
+  const header = `\n会话摘要 (${new Date().toLocaleDateString()}):\n`
+  await appendMemory(memPath, header + summary, 2000)
+  ctx.print(`✓ 已将最近对话摘要写入 ${memPath}`)
+}
+
+async function handleCompact(ctx: CommandContext): Promise<void> {
+  if (ctx.session.messages.length < 4) { ctx.print('对话太短，无需压缩'); return }
+  ctx.print('正在压缩上下文...')
+  const provider = resolveProvider('lite', ctx.config)
+  const compacted = await compact(ctx.session, provider)
+  ctx.setSession(compacted)
+  const saved = ctx.session.messages.length - compacted.messages.length
+  ctx.print(`✓ 上下文已压缩，减少了 ${saved} 条消息`)
+}
+
+async function handleDoctor(ctx: CommandContext): Promise<void> {
+  ctx.print('正在检查各项服务...')
+  const report = await runHealthCheck(ctx.config, [])
+  for (const p of report.providers) {
+    const icon = p.ok ? '✓' : '✗'
+    ctx.print(`${icon} ${p.name}: ${p.ok ? 'OK' : (p.error ?? '连接失败')}`)
+  }
+  ctx.print(`磁盘: ${report.diskMB} MB 可用${report.diskWarning ? ' ⚠ 空间不足' : ''}`)
 }
