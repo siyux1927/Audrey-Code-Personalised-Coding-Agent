@@ -2,14 +2,14 @@ import { writeFile, readFile, readdir, stat, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import os from 'os'
-import type { Message, ModelTier, PermissionMode } from '../types.js'
+import type { Message, PermissionMode } from '../types.js'
 import type { AudreyConfig } from '../config.js'
 
 export interface Session {
   id: string
   createdAt: number
   messages: Message[]
-  modelOverride?: ModelTier
+  modelOverride?: string   // model ID, e.g. 'glm-4-flash', 'deepseek-chat'
   permissionMode: PermissionMode
   modifiedFiles: string[]
 }

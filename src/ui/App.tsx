@@ -6,32 +6,30 @@ import { FlowerArt } from './FlowerArt.js'
 import { MessageList } from './MessageList.js'
 import { Markdown } from './Markdown.js'
 import { Prompt } from './Prompt.js'
+import { ModelSelector } from './ModelSelector.js'
 import { AgentStatus, type AgentTask } from './AgentStatus.js'
 import { getPhrase } from './phrases.js'
 import { loadConfig, saveConfig, ensureAudreyDir, type AudreyConfig } from '../config.js'
 import { createSession, addMessage, saveSession, getContextUsage, type Session } from '../agent/session.js'
 import { loadMemory } from '../memory/reader.js'
 import { route } from '../agent/router.js'
-import { resolveProvider } from '../providers/registry.js'
+import { resolveProvider, resolveProviderByModelId } from '../providers/registry.js'
 import { parseCommand } from '../commands/index.js'
 import { handleCommand } from '../commands/handlers.js'
 import { agentLoop } from '../agent/loop.js'
 import { getTodaySpend, recordUsage } from '../health/budget.js'
+import { getModelDef, MODELS } from '../models.js'
 import type { PermissionMode } from '../types.js'
+import type { ModelDef } from '../models.js'
 
 interface Props { permissionMode: PermissionMode }
 
 type AppPhase = 'splash' | 'repl'
 
-// Sentinel toolName values (never sent to AI)
 const CMD_OUTPUT = '__output__'
 const BTW_NOTE   = '__btw__'
 
-// Remove messages that would cause a 400 from the API:
-//  - CMD_OUTPUT / BTW_NOTE display-only messages
-//  - tool messages whose tool_call_id doesn't match any preceding assistant tool_calls
 function sanitizeForApi(messages: import('../types.js').Message[]): import('../types.js').Message[] {
-  // Collect all valid tool_call ids from assistant messages
   const validIds = new Set<string>()
   for (const m of messages) {
     if (m.role === 'assistant' && m.toolCalls) {
@@ -48,13 +46,14 @@ function sanitizeForApi(messages: import('../types.js').Message[]): import('../t
 export function App({ permissionMode }: Props) {
   useApp()
   const [phase, setPhase] = useState<AppPhase>('splash')
-  const [splashReady, setSplashReady] = useState(false)  // init done + min time elapsed
+  const [splashReady, setSplashReady] = useState(false)
   const [config, setConfigState] = useState<AudreyConfig | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [generating, setGenerating] = useState(false)
   const [currentPhrase, setCurrentPhrase] = useState('')
   const [agentTasks] = useState<AgentTask[]>([])
   const [streamContent, setStreamContent] = useState('')
+  const [modelSelecting, setModelSelecting] = useState(false)
 
   useEffect(() => {
     const minDelay = new Promise<void>(r => setTimeout(r, 1200))
@@ -68,13 +67,12 @@ export function App({ permissionMode }: Props) {
         : sess
       setConfigState(cfg)
       setSession({ ...sessWithMemory, permissionMode })
-      await minDelay    // ensure splash shows at least 1.2s
+      await minDelay
       setSplashReady(true)
     }
     void init()
   }, [])
 
-  // Dismiss splash on any keypress (after init finishes)
   useInput((_input, key) => {
     if (phase === 'splash' && splashReady && !key.ctrl) setPhase('repl')
   }, { isActive: phase === 'splash' })
@@ -82,9 +80,14 @@ export function App({ permissionMode }: Props) {
   const handleSubmit = useCallback(async (input: string) => {
     if (!config || !session) return
 
-    // ── Command handling ──────────────────────────────────────────────────────
     const cmd = parseCommand(input)
     if (cmd) {
+      // Intercept /model with no args for interactive picker
+      if (cmd.name === 'model' && cmd.args.length === 0) {
+        setModelSelecting(true)
+        return
+      }
+
       await handleCommand(cmd, {
         session,
         config,
@@ -100,7 +103,6 @@ export function App({ permissionMode }: Props) {
       return
     }
 
-    // ── Budget guard ──────────────────────────────────────────────────────────
     const todaySpend = await getTodaySpend()
     if (todaySpend >= config.dailyBudgetCNY) {
       setSession(s => s
@@ -113,7 +115,6 @@ export function App({ permissionMode }: Props) {
       return
     }
 
-    // ── Extract /btw notes and inject into context ────────────────────────────
     const btwNotes = session.messages
       .filter(m => m.toolName === BTW_NOTE)
       .map(m => m.content)
@@ -121,24 +122,22 @@ export function App({ permissionMode }: Props) {
       ? `[注意事项]\n${btwNotes.join('\n')}\n\n${input}`
       : input
 
-    // Build session: remove btw notes, remove cmd output, add user message
     let current: Session = {
       ...session,
       messages: session.messages.filter(m => m.toolName !== BTW_NOTE),
     }
-    current = addMessage(current, { role: 'user', content: input }) // display: original
+    current = addMessage(current, { role: 'user', content: input })
     setSession(current)
     setGenerating(true)
     setCurrentPhrase(getPhrase('thinking'))
 
-    // AI sees augmented input; sanitize before sending
     const aiMessages = [
       ...sanitizeForApi(current.messages.slice(0, -1)),
       { role: 'user' as const, content: effectiveInput },
     ]
 
-    const tier = route(input, aiMessages, current.modelOverride)
-    const provider = resolveProvider(tier, config)
+    const modelId = route(input, aiMessages, current.modelOverride)
+    const provider = resolveProviderByModelId(modelId, config)
     const t0 = Date.now()
 
     try {
@@ -150,7 +149,6 @@ export function App({ permissionMode }: Props) {
           setStreamContent(streamBuf)
           setCurrentPhrase(getPhrase('thinking'))
         } else if (event.type === 'turn_done') {
-          // Flush assistant turn to session
           if (streamBuf) {
             current = addMessage(current, {
               role: 'assistant',
@@ -163,7 +161,6 @@ export function App({ permissionMode }: Props) {
           }
         } else if (event.type === 'tool_start') {
           setCurrentPhrase(getPhrase('running'))
-          // Display-only: use CMD_OUTPUT so it's stripped before sending to AI
           current = addMessage(current, {
             role: 'tool',
             content: `⚙ ${event.name}(${JSON.stringify(event.args).slice(0, 100)})`,
@@ -171,7 +168,6 @@ export function App({ permissionMode }: Props) {
           })
           setSession(current)
         } else if (event.type === 'tool_result') {
-          // Proper tool result: toolCallId must match the assistant's tool_calls entry
           current = addMessage(current, {
             role: 'tool',
             content: event.result.slice(0, 2000),
@@ -181,7 +177,6 @@ export function App({ permissionMode }: Props) {
           setSession(current)
         } else if (event.type === 'done') {
           await saveSession(current)
-          // Record approximate usage (rough estimate: 1 CNY per 500k chars)
           const chars = aiMessages.reduce((s, m) => s + m.content.length, 0)
           await recordUsage({
             date: new Date().toISOString().slice(0, 10),
@@ -210,6 +205,15 @@ export function App({ permissionMode }: Props) {
     setStreamContent('')
   }, [])
 
+  const handleModelSelect = useCallback((model: ModelDef) => {
+    setSession(s => s ? { ...s, modelOverride: model.id } : s)
+    setModelSelecting(false)
+  }, [])
+
+  const handleModelCancel = useCallback(() => {
+    setModelSelecting(false)
+  }, [])
+
   if (phase === 'splash') {
     return (
       <Box flexDirection="column" padding={1}>
@@ -226,39 +230,58 @@ export function App({ permissionMode }: Props) {
   if (!config || !session) return null
 
   const contextPct = Math.round(getContextUsage(session, config.sessionMaxTokens) * 100)
+  const currentModelDef = getModelDef(session.modelOverride ?? 'glm-4-flash')
+  const modelLabel = session.modelOverride ? currentModelDef.displayName : 'auto'
 
   return (
     <Box flexDirection="column" padding={1}>
-      <Box marginBottom={1}>
-        <Text bold color={theme.purple}>Audrey Code v0.1.0  </Text>
-        <Text color={theme.dimPurple}>{session.modelOverride ?? 'auto'} │ </Text>
-        <Text color={contextPct >= 70 ? theme.yellow : theme.dimPurple}>ctx {contextPct}%</Text>
+      {/* Persistent flower + status header */}
+      <Box marginBottom={1} flexDirection="row" alignItems="flex-start">
+        <Box marginRight={2}>
+          <FlowerArt version="v0.1.0" tagline={config.tagline ?? '实习摸鱼，努力学习'} />
+        </Box>
+        <Box flexDirection="column" justifyContent="flex-end" alignSelf="flex-end">
+          <Text color={theme.dimPurple}>{modelLabel} │ </Text>
+          <Text color={contextPct >= 70 ? theme.yellow : theme.dimPurple}>ctx {contextPct}%</Text>
+        </Box>
       </Box>
 
-      <MessageList messages={session.messages.filter(m => m.role !== 'system')} />
-
-      {/* Streaming in-progress assistant response */}
-      {streamContent !== '' && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text color={theme.purple}>◆</Text>
-          <Box marginLeft={2} flexDirection="column">
-            <Markdown>{streamContent}</Markdown>
-          </Box>
-        </Box>
+      {/* Model selector overlay */}
+      {modelSelecting && (
+        <ModelSelector
+          currentModelId={session.modelOverride}
+          onSelect={handleModelSelect}
+          onCancel={handleModelCancel}
+        />
       )}
 
-      <AgentStatus tasks={agentTasks} />
+      {!modelSelecting && (
+        <>
+          <MessageList messages={session.messages.filter(m => m.role !== 'system')} />
 
-      {generating && streamContent === '' && (
-        <Box marginY={1}>
-          <Text color={theme.purple}><Spinner type="dots" /></Text>
-          <Text color={theme.pink}>  {currentPhrase}</Text>
-        </Box>
+          {streamContent !== '' && (
+            <Box flexDirection="column" marginBottom={1}>
+              <Text color={theme.purple}>◆</Text>
+              <Box marginLeft={2} flexDirection="column">
+                <Markdown>{streamContent}</Markdown>
+              </Box>
+            </Box>
+          )}
+
+          <AgentStatus tasks={agentTasks} />
+
+          {generating && streamContent === '' && (
+            <Box marginY={1}>
+              <Text color={theme.purple}><Spinner type="dots" /></Text>
+              <Text color={theme.pink}>  {currentPhrase}</Text>
+            </Box>
+          )}
+
+          <Prompt onSubmit={handleSubmit} onAbort={handleAbort} disabled={generating} />
+
+          <Text color={theme.dimPurple}>  /help 查看命令  │  ESC 中断  │  Ctrl+C 退出</Text>
+        </>
       )}
-
-      <Prompt onSubmit={handleSubmit} onAbort={handleAbort} disabled={generating} />
-
-      <Text color={theme.dimPurple}>  /help 查看命令  │  ESC 中断  │  Ctrl+C 退出</Text>
     </Box>
   )
 }

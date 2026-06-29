@@ -1,4 +1,4 @@
-import type { Message, ModelTier } from '../types.js'
+import type { Message } from '../types.js'
 
 const REASON_KEYWORDS = [
   '为什么', '原因', '分析', '设计', '架构', '推理', '优化策略',
@@ -12,23 +12,24 @@ const CODE_KEYWORDS = [
   'class', 'interface', 'component', 'api', 'sql',
 ]
 
+// Returns a model ID string (e.g. 'glm-4-flash', 'deepseek-chat', 'deepseek-reasoner')
 export function route(
   prompt: string,
   history: Message[],
-  override?: ModelTier,
-): ModelTier {
+  override?: string,
+): string {
   if (override) return override
 
   const lower = prompt.toLowerCase()
 
-  if (REASON_KEYWORDS.some(kw => lower.includes(kw))) return 'reason'
+  if (REASON_KEYWORDS.some(kw => lower.includes(kw))) return 'deepseek-reasoner'
 
   if (
     CODE_KEYWORDS.some(kw => lower.includes(kw)) ||
     history.length > 4
-  ) return 'standard'
+  ) return 'deepseek-chat'
 
-  if (prompt.length < 200) return 'lite'
+  if (prompt.length < 200) return 'glm-4-flash'
 
-  return 'standard'
+  return 'deepseek-chat'
 }

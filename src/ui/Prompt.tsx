@@ -40,7 +40,7 @@ export function Prompt({ onSubmit, onAbort, disabled }: Props) {
     if (key.return) {
       const trimmed = value.trim()
       if (!trimmed) return
-      history.current = [trimmed, ...history.current.slice(0, 99)]
+      history.current = [trimmed, ...history.current.slice(0, 49)]
       histIdx.current = -1
       savedInput.current = ''
       onSubmit(trimmed)

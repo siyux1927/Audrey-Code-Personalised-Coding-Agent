@@ -3,13 +3,14 @@ import type { Message, ChatOpts, ModelTier } from '../types.js'
 import type { AudreyConfig } from '../config.js'
 
 export class GLMProvider extends BaseProvider {
-  readonly modelId = 'glm-4-flash'
+  readonly modelId: string
   readonly tier: ModelTier = 'lite'
   protected baseUrl = 'https://open.bigmodel.cn/api/paas/v4'
   protected apiKey: string
 
-  constructor(config: AudreyConfig) {
+  constructor(config: AudreyConfig, modelId = 'glm-4-flash') {
     super(config)
+    this.modelId = modelId
     this.apiKey = process.env.GLM_API_KEY ?? ''
   }
 

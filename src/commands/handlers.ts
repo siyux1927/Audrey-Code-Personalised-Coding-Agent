@@ -11,7 +11,7 @@ import { runHealthCheck } from '../health/check.js'
 import { resolveProvider } from '../providers/registry.js'
 import type { AudreyConfig } from '../config.js'
 import type { ParsedCommand } from './index.js'
-import type { ModelTier } from '../types.js'
+import { MODELS } from '../models.js'
 
 export interface CommandContext {
   session: Session
@@ -51,19 +51,25 @@ export async function handleCommand(
 }
 
 function handleModel(args: string[], ctx: CommandContext): void {
-  const tier = args[0] as ModelTier | 'auto' | undefined
-  if (!tier) {
-    ctx.print(`Current model override: ${ctx.session.modelOverride ?? 'auto'}`)
+  const arg = args[0]
+  if (!arg) {
+    const current = ctx.session.modelOverride
+    const name = MODELS.find(m => m.id === current)?.displayName ?? 'auto'
+    ctx.print(`当前模型: ${name}  (输入 /model 打开交互式选择器)`)
     return
   }
-  if (tier === 'auto') {
+  if (arg === 'auto') {
     ctx.setSession({ ...ctx.session, modelOverride: undefined })
-    ctx.print('Model routing: auto')
-  } else if (['lite', 'standard', 'reason'].includes(tier)) {
-    ctx.setSession({ ...ctx.session, modelOverride: tier as ModelTier })
-    ctx.print(`Model locked to: ${tier}`)
+    ctx.print('模型路由: 自动')
+    return
+  }
+  const found = MODELS.find(m => m.id === arg)
+  if (found) {
+    ctx.setSession({ ...ctx.session, modelOverride: found.id })
+    ctx.print(`已锁定模型: ${found.displayName}`)
   } else {
-    ctx.print('Usage: /model [lite|standard|reason|auto]')
+    const ids = MODELS.map(m => m.id).join('|')
+    ctx.print(`用法: /model [${ids}|auto]`)
   }
 }
 
@@ -103,8 +109,9 @@ function handleStatus(ctx: CommandContext): void {
     (ctx.session.messages.reduce((s, m) => s + m.content.length, 0) / 3.5) /
     ctx.config.sessionMaxTokens * 100,
   )
+  const modelName = MODELS.find(m => m.id === ctx.session.modelOverride)?.displayName ?? 'auto'
   ctx.print(
-    `模型: ${ctx.session.modelOverride ?? 'auto'} | ` +
+    `模型: ${modelName} | ` +
     `权限: ${ctx.session.permissionMode} | ` +
     `上下文: ${usage}% | ` +
     `消息: ${ctx.session.messages.length}条`,
@@ -172,7 +179,7 @@ async function handleConfig(ctx: CommandContext): Promise<void> {
 
 function handleHelp(ctx: CommandContext): void {
   ctx.print(`
-/model [lite|standard|reason|auto]  切换模型档位
+/model [模型ID|auto]                 交互式选择模型（无参数）或直接指定
 /cost                               token 消耗明细
 /memory [global|project]            打开 AUDREY.md 编辑
 /save-memory                        整理会话摘要写入记忆
