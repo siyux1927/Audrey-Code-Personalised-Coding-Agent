@@ -1,18 +1,24 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, rmSync } from 'fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdirSync, rmSync, mkdtempSync } from 'fs'
 import { join } from 'path'
 import os from 'os'
-
-const HOME = join(os.tmpdir(), 'audrey-sess-' + Date.now())
-process.env.HOME = HOME
 
 import {
   createSession, saveSession, loadLastSession, addMessage, getContextUsage,
 } from '../src/agent/session.js'
 import { DEFAULT_CONFIG } from '../src/config.js'
 
-beforeEach(() => mkdirSync(join(HOME, '.audrey', 'sessions'), { recursive: true }))
-afterEach(() => rmSync(HOME, { recursive: true, force: true }))
+let HOME: string
+
+beforeEach(() => {
+  HOME = mkdtempSync(join(os.tmpdir(), 'audrey-sess-'))
+  mkdirSync(join(HOME, '.audrey', 'sessions'), { recursive: true })
+  vi.stubEnv('HOME', HOME)
+})
+afterEach(() => {
+  vi.unstubAllEnvs()
+  rmSync(HOME, { recursive: true, force: true })
+})
 
 describe('session', () => {
   it('creates a session with empty history', () => {
