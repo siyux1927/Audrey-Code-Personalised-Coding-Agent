@@ -8,7 +8,8 @@
     "dev": "tsx src/cli.tsx",
     "build": "tsc",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check": "tsc --noEmit && vitest run"
   },
   "dependencies": {
     "ink": "^5.0.1",
