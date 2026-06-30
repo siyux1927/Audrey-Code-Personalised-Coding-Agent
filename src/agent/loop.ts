@@ -32,8 +32,17 @@ const PARAM_SCHEMAS = {
   glob: {
     type: 'object',
     properties: {
-      pattern: { type: 'string', description: 'Glob pattern (e.g. src/**/*.ts)' },
+      pattern: { type: 'string', description: 'Glob pattern (e.g. src/**/*.ts). Be specific — avoid **/* without a file extension.' },
       cwd: { type: 'string', description: 'Working directory (optional)' },
+    },
+    required: ['pattern'],
+  },
+  grep: {
+    type: 'object',
+    properties: {
+      pattern: { type: 'string', description: 'Regex or string to search for (case-insensitive)' },
+      glob: { type: 'string', description: 'Limit search to files matching this glob, e.g. src/**/*.ts' },
+      path: { type: 'string', description: 'Root directory to search in (default: cwd)' },
     },
     required: ['pattern'],
   },

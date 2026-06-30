@@ -62,9 +62,17 @@ export function App({ permissionMode }: Props) {
       const cfg = await loadConfig()
       const sess = createSession(cfg)
       const memory = await loadMemory(process.cwd(), cfg.memoryMaxTokens)
-      const sessWithMemory = memory
-        ? addMessage(sess, { role: 'system', content: memory })
-        : sess
+      const corePrompt = `你是 Audrey Code，一个运行在终端里的 AI 编程助手。当前工作目录：${process.cwd()}
+
+工具使用原则（严格遵守）：
+- 行动前先思考：明确你需要什么信息，哪个文件最可能包含它，再调用工具
+- 优先用 grep 搜索具体的符号、函数名、关键词，定位到行之后再 read 对应文件
+- 需要了解项目结构时，先读 package.json 或 README，而不是 glob 整个目录
+- glob 必须带具体扩展名，如 src/**/*.ts，禁止使用 **/* 这类宽泛 pattern
+- 只读你真正需要的文件，不要"预防性"地把一堆可能有用的文件全读进来
+- 文件操作默认在当前工作目录范围内，不要访问无关目录`
+      const systemContent = memory ? `${corePrompt}\n\n---\n\n${memory}` : corePrompt
+      const sessWithMemory = addMessage(sess, { role: 'system', content: systemContent })
       setConfigState(cfg)
       setSession({ ...sessWithMemory, permissionMode })
       await minDelay
