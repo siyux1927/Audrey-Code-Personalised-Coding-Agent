@@ -1,7 +1,8 @@
 import type { IProvider } from '../providers/base.js'
-import type { Message, ToolCallData } from '../types.js'
+import type { Message, ToolCallData, PermissionMode } from '../types.js'
 import type { AudreyConfig } from '../config.js'
 import { ALL_TOOLS } from '../tools/index.js'
+import { checkToolPermission, withTimeout } from '../tools/permissions.js'
 
 export type LoopEvent =
   | { type: 'token'; content: string }
@@ -9,6 +10,12 @@ export type LoopEvent =
   | { type: 'tool_start'; id: string; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; id: string; name: string; result: string; isError: boolean }
   | { type: 'done' }
+
+export interface AgentLoopOpts {
+  maxIterations?: number
+  permissionMode?: PermissionMode
+  requestPermission?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
+}
 
 const PARAM_SCHEMAS = {
   read_file: {
@@ -46,9 +53,16 @@ const PARAM_SCHEMAS = {
     },
     required: ['pattern'],
   },
+  web_search: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search query for web search' },
+    },
+    required: ['query'],
+  },
 } as const
 
-const TOOL_SPECS = ALL_TOOLS.map(t => ({
+const TOOL_SPECS = () => ALL_TOOLS.map(t => ({
   name: t.name,
   description: t.description,
   parameters: PARAM_SCHEMAS[t.name as keyof typeof PARAM_SCHEMAS] ?? { type: 'object', properties: {} },
@@ -58,15 +72,16 @@ export async function* agentLoop(
   messages: Message[],
   provider: IProvider,
   config: AudreyConfig,
-  maxIterations = 8,
+  opts: AgentLoopOpts = {},
 ): AsyncGenerator<LoopEvent> {
+  const { maxIterations = 8, permissionMode = 'ask', requestPermission } = opts
   const current = [...messages]
 
   for (let i = 0; i < maxIterations; i++) {
     let iterContent = ''
     const toolCalls: ToolCallData[] = []
 
-    for await (const event of provider.chatWithTools(current, TOOL_SPECS)) {
+    for await (const event of provider.chatWithTools(current, TOOL_SPECS())) {
       if (event.type === 'token') {
         iterContent += event.content
         yield { type: 'token', content: event.content }
@@ -79,28 +94,52 @@ export async function* agentLoop(
 
     if (toolCalls.length === 0) break
 
-    // Add assistant turn with tool calls to context
-    current.push({
-      role: 'assistant',
-      content: iterContent,
-      toolCalls,
-    })
+    current.push({ role: 'assistant', content: iterContent, toolCalls })
 
-    // Execute each tool and add result to context
+    // Permission check phase (sequential — can't show two prompts at once)
+    type Verdict = { call: ToolCallData; allowed: boolean }
+    const verdicts: Verdict[] = []
     for (const call of toolCalls) {
-      yield { type: 'tool_start', id: call.id, name: call.name, args: call.args }
-      const tool = ALL_TOOLS.find(t => t.name === call.name)
-      try {
-        const result = tool
-          ? await tool.execute(call.args as any, config)
-          : `Unknown tool: ${call.name}`
-        yield { type: 'tool_result', id: call.id, name: call.name, result, isError: false }
-        current.push({ role: 'tool', content: result, toolCallId: call.id, toolName: call.name })
-      } catch (err: any) {
-        const msg = (err as Error).message
-        yield { type: 'tool_result', id: call.id, name: call.name, result: msg, isError: true }
-        current.push({ role: 'tool', content: msg, toolCallId: call.id, toolName: call.name })
-      }
+      const allowed = await checkToolPermission(
+        call.name, call.args, permissionMode,
+        config.toolPermissions, requestPermission,
+      )
+      verdicts.push({ call, allowed })
+    }
+
+    // Emit tool_start for approved calls
+    for (const { call, allowed } of verdicts) {
+      if (allowed) yield { type: 'tool_start', id: call.id, name: call.name, args: call.args }
+    }
+
+    // Execute approved tools in parallel
+    const execResults = await Promise.all(
+      verdicts.map(async ({ call, allowed }) => {
+        if (!allowed) {
+          return { call, result: '[denied by permission policy]', isError: true }
+        }
+        const tool = ALL_TOOLS.find(t => t.name === call.name)
+        if (!tool) {
+          // Provider-managed tools (e.g. GLM web_search) execute server-side.
+          // Return empty string so the model continues with its own results.
+          return { call, result: '', isError: false }
+        }
+        try {
+          const result = await withTimeout(
+            tool.execute(call.args as any, config),
+            config.bashTimeoutMs,
+          )
+          return { call, result, isError: false }
+        } catch (err: any) {
+          return { call, result: (err as Error).message, isError: true }
+        }
+      }),
+    )
+
+    // Emit results and push to context
+    for (const { call, result, isError } of execResults) {
+      yield { type: 'tool_result', id: call.id, name: call.name, result, isError }
+      current.push({ role: 'tool', content: result.slice(0, 2000), toolCallId: call.id, toolName: call.name })
     }
   }
 

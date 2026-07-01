@@ -5,6 +5,7 @@ import os from 'os'
 import type { McpServerConfig } from './types.js'
 
 export interface AudreyConfig {
+  toolPermissions?: Record<string, 'allow' | 'ask' | 'deny'>
   dailyBudgetCNY: number
   sessionMaxTokens: number
   contextWarningAt: number

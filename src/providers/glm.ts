@@ -14,6 +14,10 @@ export class GLMProvider extends BaseProvider {
     this.apiKey = process.env.GLM_API_KEY ?? ''
   }
 
+  protected extraApiTools(): unknown[] {
+    return [{ type: 'web_search', web_search: { enable: true } }]
+  }
+
   protected async *chatOnce(messages: Message[], opts?: ChatOpts): AsyncIterable<string> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.config.requestTimeoutMs)

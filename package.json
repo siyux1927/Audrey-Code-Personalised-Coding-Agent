@@ -1,6 +1,6 @@
 {
   "name": "audrey-code",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Personal AI coding CLI",
   "type": "module",
   "bin": { "audrey": "./dist/cli.js" },

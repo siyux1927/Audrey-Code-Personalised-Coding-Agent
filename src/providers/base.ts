@@ -1,5 +1,6 @@
 import type { Message, ChatOpts, ModelTier, ToolSpec, ChatEvent } from '../types.js'
 import type { AudreyConfig } from '../config.js'
+import { get_encoding, type Tiktoken } from 'tiktoken'
 
 export type { ToolSpec, ChatEvent }
 
@@ -9,6 +10,12 @@ export interface IProvider {
   chat(messages: Message[], opts?: ChatOpts): AsyncIterable<string>
   chatWithTools(messages: Message[], tools: ToolSpec[], opts?: ChatOpts): AsyncIterable<ChatEvent>
   countTokens(messages: Message[]): number
+}
+
+let _enc: Tiktoken | null = null
+function getEnc(): Tiktoken {
+  if (!_enc) _enc = get_encoding('cl100k_base')
+  return _enc
 }
 
 export abstract class BaseProvider implements IProvider {
@@ -61,6 +68,9 @@ export abstract class BaseProvider implements IProvider {
 
   protected abstract chatOnce(messages: Message[], opts?: ChatOpts): AsyncIterable<string>
 
+  // Subclasses can inject provider-level tools (e.g. GLM web_search plugin)
+  protected extraApiTools(): unknown[] { return [] }
+
   protected async *chatWithToolsOnce(
     messages: Message[],
     tools: ToolSpec[],
@@ -75,12 +85,14 @@ export abstract class BaseProvider implements IProvider {
         stream: true,
       }
       if (opts?.maxTokens) body.max_tokens = opts.maxTokens
-      if (tools.length > 0) {
-        body.tools = tools.map(t => ({
+      const apiTools = [
+        ...tools.map(t => ({
           type: 'function',
           function: { name: t.name, description: t.description, parameters: t.parameters },
-        }))
-      }
+        })),
+        ...this.extraApiTools(),
+      ]
+      if (apiTools.length > 0) body.tools = apiTools
       const stream = await this.fetchStream(
         '/chat/completions',
         body,
@@ -93,8 +105,12 @@ export abstract class BaseProvider implements IProvider {
   }
 
   countTokens(messages: Message[]): number {
-    const chars = messages.reduce((sum, m) => sum + m.content.length, 0)
-    return Math.ceil(chars / 3.5)
+    try {
+      const enc = getEnc()
+      return messages.reduce((sum, m) => sum + enc.encode(m.content).length, 0)
+    } catch {
+      return messages.reduce((sum, m) => sum + Math.ceil(m.content.length / 3.5), 0)
+    }
   }
 
   protected async fetchStream(
@@ -102,6 +118,9 @@ export abstract class BaseProvider implements IProvider {
     body: object,
     signal?: AbortSignal,
   ): Promise<ReadableStream<Uint8Array>> {
+    if (!this.apiKey) {
+      throw new Error(`[${this.modelId}] API key not set — check your environment variables (GLM_API_KEY / DEEPSEEK_API_KEY)`)
+    }
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers: {
@@ -113,7 +132,7 @@ export abstract class BaseProvider implements IProvider {
     })
     if (!res.ok) {
       const text = await res.text()
-      const err: any = new Error(`HTTP ${res.status}: ${text}`)
+      const err: any = new Error(`HTTP ${res.status} [${this.modelId}]: ${text}`)
       err.status = res.status
       throw err
     }
@@ -124,6 +143,7 @@ export abstract class BaseProvider implements IProvider {
     const reader = stream.getReader()
     const decoder = new TextDecoder()
     let buf = ''
+    const think: ThinkState = { inThink: false, buf: '' }
     try {
       while (true) {
         const { done, value } = await reader.read()
@@ -137,8 +157,8 @@ export abstract class BaseProvider implements IProvider {
           if (data === '[DONE]') return
           try {
             const json = JSON.parse(data)
-            const delta = json.choices?.[0]?.delta?.content
-            if (delta) yield delta
+            const raw = json.choices?.[0]?.delta?.content
+            if (raw) { const out = filterThink(raw, think); if (out) yield out }
           } catch {}
         }
       }
@@ -155,6 +175,7 @@ export abstract class BaseProvider implements IProvider {
     let buf = ''
     // Accumulate tool call arguments per index (they stream in fragments)
     const accum = new Map<number, { id: string; name: string; args: string }>()
+    const think: ThinkState = { inThink: false, buf: '' }
 
     try {
       while (true) {
@@ -177,7 +198,11 @@ export abstract class BaseProvider implements IProvider {
             if (!choice) continue
             const delta = choice.delta
 
-            if (delta?.content) yield { type: 'token', content: delta.content }
+            // Skip reasoning_content (DeepSeek-R1 style); filter <think> tags (GLM-Z1 style)
+            if (delta?.content) {
+              const out = filterThink(delta.content, think)
+              if (out) yield { type: 'token', content: out }
+            }
 
             if (delta?.tool_calls) {
               for (const tc of delta.tool_calls) {
@@ -203,6 +228,34 @@ export abstract class BaseProvider implements IProvider {
       reader.releaseLock()
     }
   }
+}
+
+// Strips <think>...</think> blocks from streamed content (GLM-Z1, DeepSeek-R1)
+type ThinkState = { inThink: boolean; buf: string }
+
+function filterThink(chunk: string, s: ThinkState): string {
+  let input = s.buf + chunk
+  s.buf = ''
+  let output = ''
+  while (input.length > 0) {
+    if (s.inThink) {
+      const end = input.indexOf('</think>')
+      if (end >= 0) { s.inThink = false; input = input.slice(end + 8) }
+      else { const p = trailMatch(input, '</think>'); s.buf = input.slice(input.length - p); break }
+    } else {
+      const start = input.indexOf('<think>')
+      if (start >= 0) { output += input.slice(0, start); s.inThink = true; input = input.slice(start + 7) }
+      else { const p = trailMatch(input, '<think>'); output += input.slice(0, input.length - p); s.buf = input.slice(input.length - p); break }
+    }
+  }
+  return output
+}
+
+function trailMatch(str: string, tag: string): number {
+  for (let n = Math.min(tag.length - 1, str.length); n > 0; n--) {
+    if (str.endsWith(tag.slice(0, n))) return n
+  }
+  return 0
 }
 
 function* flushToolCalls(

@@ -8,9 +8,11 @@ interface Props {
   disabled?: boolean
 }
 
+// Module-level: survives component unmount/remount (e.g. when model selector opens)
+const persistentHistory: string[] = []
+
 export function Prompt({ onSubmit, onAbort, disabled }: Props) {
   const [value, setValue] = useState('')
-  const history = useRef<string[]>([])
   const histIdx = useRef(-1)
   const savedInput = useRef('')  // preserves draft when browsing history
 
@@ -20,12 +22,11 @@ export function Prompt({ onSubmit, onAbort, disabled }: Props) {
     if (key.escape) { onAbort(); return }
 
     if (key.upArrow) {
-      const hist = history.current
-      if (hist.length === 0) return
+      if (persistentHistory.length === 0) return
       if (histIdx.current === -1) savedInput.current = value   // save draft
-      const next = Math.min(histIdx.current + 1, hist.length - 1)
+      const next = Math.min(histIdx.current + 1, persistentHistory.length - 1)
       histIdx.current = next
-      setValue(hist[next] ?? '')
+      setValue(persistentHistory[next] ?? '')
       return
     }
 
@@ -33,14 +34,15 @@ export function Prompt({ onSubmit, onAbort, disabled }: Props) {
       if (histIdx.current === -1) return
       const next = histIdx.current - 1
       histIdx.current = next
-      setValue(next === -1 ? savedInput.current : history.current[next] ?? '')
+      setValue(next === -1 ? savedInput.current : persistentHistory[next] ?? '')
       return
     }
 
     if (key.return) {
       const trimmed = value.trim()
       if (!trimmed) return
-      history.current = [trimmed, ...history.current.slice(0, 49)]
+      persistentHistory.unshift(trimmed)
+      if (persistentHistory.length > 50) persistentHistory.pop()
       histIdx.current = -1
       savedInput.current = ''
       onSubmit(trimmed)
